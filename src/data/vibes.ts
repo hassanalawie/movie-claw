@@ -30,6 +30,7 @@ export type VibeId =
   | 'mind-bending'
   | 'adventure-mode'
   | 'nostalgic-night'
+  | 'animated-comfort'
   | 'slow-energy'
   | 'steady-energy'
   | 'high-energy';
@@ -107,6 +108,15 @@ export const vibeGroups: VibeGroup[] = [
         description: 'Older favorites and classics.',
         rules: {
           releaseYear: { max: 2010 },
+        },
+      },
+      {
+        id: 'animated-comfort',
+        label: 'Animated comfort',
+        description: 'Lighthearted animation that still charms adults.',
+        rules: {
+          addGenres: [16, 10751, 35],
+          voteAverage: { min: 6.2 },
         },
       },
     ],

@@ -6,7 +6,7 @@ import { vibeGroups, type VibeId, vibeOptionMap } from '@/data/vibes';
 import type { Movie, ComparisonLogEntry } from '@/types/movies';
 
 const MIN_ROUNDS = 4;
-const TARGET_ROUNDS = 6;
+const OVERTIME_ROUNDS = 6;
 
 export function MovieChooser() {
   const [selected, setSelected] = useState<Set<VibeId>>(new Set());
@@ -14,14 +14,16 @@ export function MovieChooser() {
   const [status, setStatus] = useState<'idle' | 'loading' | 'picking' | 'decision' | 'final'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [movies, setMovies] = useState<Movie[]>([]);
-  const [currentPair, setCurrentPair] = useState<[Movie, Movie] | null>(null);
+  const [deck, setDeck] = useState<Movie[]>([]);
   const [scores, setScores] = useState<Record<number, { wins: number; losses: number }>>({});
   const [rounds, setRounds] = useState(0);
   const [log, setLog] = useState<ComparisonLogEntry[]>([]);
   const [summary, setSummary] = useState<{ chips: VibeId[]; note?: string } | null>(null);
   const [finalCandidate, setFinalCandidate] = useState<Movie | null>(null);
   const [finalChoice, setFinalChoice] = useState<Movie | null>(null);
+
+  const currentPair = deck.length >= 2 ? ([deck[0], deck[1]] as [Movie, Movie]) : null;
+  const learningProgress = Math.min(rounds / MIN_ROUNDS, 1);
 
   const requiredGroupSatisfied = vibeGroups
     .filter((group) => group.required)
@@ -33,8 +35,6 @@ export function MovieChooser() {
     if (!summary) return null;
     return summary.chips.map((chip) => vibeOptionMap[chip]?.label ?? chip);
   }, [summary]);
-
-  const progress = Math.min(rounds, TARGET_ROUNDS);
 
   function toggleChip(chip: VibeId) {
     setSelected((prev) => {
@@ -54,8 +54,7 @@ export function MovieChooser() {
     setStatus('idle');
     setError(null);
     setToast(null);
-    setMovies([]);
-    setCurrentPair(null);
+    setDeck([]);
     setScores({});
     setRounds(0);
     setLog([]);
@@ -94,14 +93,9 @@ export function MovieChooser() {
         throw new Error('No matches found. Try broadening your vibe.');
       }
 
-      const initialPair = pickPair(data.movies);
-      if (!initialPair) {
-        throw new Error('Need at least two matches to start.');
-      }
-
-      setMovies(data.movies);
+      const seededDeck = shuffleMovies(data.movies);
+      setDeck(seededDeck);
       setScores(createScoreMap(data.movies));
-      setCurrentPair(initialPair);
       setRounds(0);
       setLog([]);
       setSummary({ chips: payload.chips, note: payload.note || undefined });
@@ -116,35 +110,50 @@ export function MovieChooser() {
 
   function handleChoice(movieId: number) {
     if (!currentPair) return;
-    const [first, second] = currentPair;
-    const winner = first.id === movieId ? first : second;
-    const loser = first.id === movieId ? second : first;
+    const [first, second, ...rest] = deck;
+    const winnerIsFirst = movieId === first.id;
+    const winnerIsSecond = movieId === second.id;
+    if (!winnerIsFirst && !winnerIsSecond) return;
+
+    const winner = winnerIsFirst ? first : second;
+    const loser = winnerIsFirst ? second : first;
+    const newDeck = winnerIsFirst ? [first, ...rest, second] : [second, ...rest, first];
 
     const updatedScores = applyScore(scores, winner.id, loser.id);
     const nextRounds = rounds + 1;
+    const learningLog: ComparisonLogEntry = { winnerTitle: winner.title, loserTitle: loser.title };
 
+    setDeck(newDeck);
     setScores(updatedScores);
     setRounds(nextRounds);
-    setLog((prev) => [...prev, { winnerTitle: winner.title, loserTitle: loser.title }]);
-    setToast(`Leaning toward ${winner.title}`);
+    setLog((prev) => [...prev, learningLog]);
+    setToast(`Noted: ${winner.title} is leading the vibe.`);
 
-    const { leader, margin } = rankLeaders(updatedScores, movies);
-    if (leader && nextRounds >= MIN_ROUNDS && (margin >= 2 || nextRounds >= TARGET_ROUNDS)) {
+    const { leader, margin } = rankLeaders(updatedScores, newDeck);
+    const ready =
+      Boolean(leader) &&
+      nextRounds >= MIN_ROUNDS &&
+      (margin >= 2 || (nextRounds >= MIN_ROUNDS + OVERTIME_ROUNDS && margin >= 1));
+
+    if (ready && leader) {
       setFinalCandidate(leader);
       setStatus('decision');
-      setCurrentPair(null);
-      return;
+    } else {
+      setFinalCandidate(null);
+      setStatus('picking');
     }
+  }
 
-    const nextPair = pickPair(movies, [winner.id, loser.id]);
-    if (!nextPair) {
-      setFinalCandidate(leader ?? winner);
-      setStatus('decision');
-      setCurrentPair(null);
-      return;
-    }
-
-    setCurrentPair(nextPair);
+  function handleSkip() {
+    if (!currentPair) return;
+    const [first, second, ...rest] = deck;
+    const newDeck = [...rest, first, second];
+    setDeck(newDeck);
+    setToast('Okay, grabbing a different matchup.');
+    setLog((prev) => [
+      ...prev,
+      { winnerTitle: 'Skipped that pairing', loserTitle: `${first.title} vs ${second.title}`, skipped: true },
+    ]);
   }
 
   function handleLock() {
@@ -155,10 +164,9 @@ export function MovieChooser() {
   }
 
   function keepExploring() {
-    if (!movies.length) return;
+    setFinalCandidate(null);
     setStatus('picking');
-    const nextPair = pickPair(movies);
-    setCurrentPair(nextPair);
+    setToast('No rush. We’ll keep comparing.');
   }
 
   return (
@@ -174,23 +182,14 @@ export function MovieChooser() {
       </header>
 
       {summary && (
-        <SummaryBar
-          summary={selectionSummary}
-          note={summary.note}
-          onEdit={resetAll}
-        />
+        <SummaryBar summary={selectionSummary} note={summary.note} onEdit={resetAll} />
       )}
 
-      {status === 'idle' || status === 'loading' ? (
+      {(status === 'idle' || status === 'loading') && (
         <form className="flex flex-col gap-8" onSubmit={handleSubmit}>
           <div className="grid gap-6 lg:grid-cols-2">
             {vibeGroups.map((group) => (
-              <VibeGroup
-                key={group.id}
-                group={group}
-                selected={selected}
-                toggleChip={toggleChip}
-              />
+              <VibeGroup key={group.id} group={group} selected={selected} toggleChip={toggleChip} />
             ))}
           </div>
 
@@ -216,43 +215,29 @@ export function MovieChooser() {
             >
               {status === 'loading' ? 'Gathering contenders…' : 'Find my movie'}
             </button>
-            <button
-              type="button"
-              onClick={resetAll}
-              className="text-sm font-medium text-slate-500 hover:text-slate-800"
-            >
+            <button type="button" onClick={resetAll} className="text-sm font-medium text-slate-500 hover:text-slate-800">
               Reset selection
             </button>
           </div>
         </form>
-      ) : null}
+      )}
 
       {status === 'picking' && currentPair && (
         <ComparisonStage
           pair={currentPair}
           onChoose={handleChoice}
-          progress={progress}
+          onSkip={handleSkip}
+          rounds={rounds}
+          learningProgress={learningProgress}
           log={log}
         />
       )}
 
       {status === 'decision' && finalCandidate && (
-        <DecisionStage
-          movie={finalCandidate}
-          onLock={handleLock}
-          onKeepExploring={keepExploring}
-          rounds={rounds}
-          log={log}
-        />
+        <DecisionStage movie={finalCandidate} onLock={handleLock} onKeepExploring={keepExploring} rounds={rounds} log={log} />
       )}
 
-      {status === 'final' && finalChoice && (
-        <FinalStage
-          movie={finalChoice}
-          log={log}
-          onRestart={resetAll}
-        />
-      )}
+      {status === 'final' && finalChoice && <FinalStage movie={finalChoice} log={log} onRestart={resetAll} />}
 
       {toast && status === 'picking' && (
         <div className="rounded-2xl border border-rose-100/40 bg-rose-50/70 px-4 py-3 text-sm text-rose-700 shadow-inner dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-100">
@@ -272,9 +257,7 @@ type VibeGroupProps = {
 function VibeGroup({ group, selected, toggleChip }: VibeGroupProps) {
   return (
     <fieldset className="flex flex-col gap-3 rounded-2xl border border-slate-100/80 bg-white/70 p-4 shadow-sm dark:border-slate-700/80 dark:bg-slate-900/60">
-      <legend className="text-sm font-semibold uppercase tracking-widest text-slate-500">
-        {group.title}
-      </legend>
+      <legend className="text-sm font-semibold uppercase tracking-widest text-slate-500">{group.title}</legend>
       {group.description && <p className="text-sm text-slate-500">{group.description}</p>}
       <div className="flex flex-wrap gap-2">
         {group.options.map((option) => {
@@ -327,21 +310,24 @@ function SummaryBar({ summary, note, onEdit }: SummaryBarProps) {
 type ComparisonStageProps = {
   pair: [Movie, Movie];
   onChoose: (id: number) => void;
-  progress: number;
+  onSkip: () => void;
+  rounds: number;
+  learningProgress: number;
   log: ComparisonLogEntry[];
 };
 
-function ComparisonStage({ pair, onChoose, progress, log }: ComparisonStageProps) {
+function ComparisonStage({ pair, onChoose, onSkip, rounds, learningProgress, log }: ComparisonStageProps) {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center gap-3 text-sm text-slate-500">
         <div className="flex flex-1 items-center gap-2">
           <div className="h-2 flex-1 rounded-full bg-slate-200">
-            <div className="h-full rounded-full bg-rose-400 transition-all" style={{ width: `${(progress / TARGET_ROUNDS) * 100}%` }} />
+            <div
+              className="h-full rounded-full bg-rose-400 transition-all"
+              style={{ width: `${learningProgress * 100}%` }}
+            />
           </div>
-          <span>
-            {progress}/{TARGET_ROUNDS}
-          </span>
+          <span>{rounds} comparisons in</span>
         </div>
         <span>Pick the one that feels closer.</span>
       </div>
@@ -350,6 +336,13 @@ function ComparisonStage({ pair, onChoose, progress, log }: ComparisonStageProps
           <MovieCard key={movie.id} movie={movie} onChoose={() => onChoose(movie.id)} />
         ))}
       </div>
+      <button
+        type="button"
+        onClick={onSkip}
+        className="w-full rounded-xl border border-slate-200/80 bg-white/80 px-4 py-3 text-sm font-semibold text-slate-500 transition hover:border-slate-300 dark:border-slate-700 dark:bg-slate-900"
+      >
+        Neither of these
+      </button>
       {log.length > 0 && <SessionLog log={log} />}
     </div>
   );
@@ -365,14 +358,7 @@ function MovieCard({ movie, onChoose }: MovieCardProps) {
   return (
     <article className="flex h-full flex-col gap-4 rounded-3xl border border-slate-200/80 bg-white/80 p-4 shadow-lg shadow-slate-200/40 dark:border-slate-700/80 dark:bg-slate-900/70">
       {posterUrl ? (
-        <Image
-          src={posterUrl}
-          alt={movie.title}
-          width={400}
-          height={600}
-          className="h-72 w-full rounded-2xl object-cover"
-          loading="lazy"
-        />
+        <Image src={posterUrl} alt={movie.title} width={400} height={600} className="h-72 w-full rounded-2xl object-cover" loading="lazy" />
       ) : (
         <div className="flex h-72 items-center justify-center rounded-2xl bg-slate-100 text-sm text-slate-400">
           No poster
@@ -383,7 +369,9 @@ function MovieCard({ movie, onChoose }: MovieCardProps) {
           {movie.title}{' '}
           <span className="text-base text-slate-500">({movie.releaseYear})</span>
         </h3>
-        <p className="text-sm text-slate-600 dark:text-slate-300 max-h-24 overflow-hidden">{movie.overview || 'No synopsis available.'}</p>
+        <p className="text-sm text-slate-600 dark:text-slate-300 max-h-24 overflow-hidden">
+          {movie.overview || 'No synopsis available.'}
+        </p>
         <div className="flex flex-wrap gap-2 text-xs text-slate-500">
           {movie.genres.map((genre) => (
             <span key={genre} className="rounded-full bg-slate-100 px-3 py-1 dark:bg-slate-800">
@@ -412,11 +400,17 @@ function SessionLog({ log }: SessionLogProps) {
     <div className="rounded-2xl border border-slate-100 bg-white/80 p-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900">
       <p className="mb-2 text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Session log</p>
       <ul className="space-y-1">
-        {log.slice(-5).map((entry, index) => (
+        {log.slice(-6).map((entry, index) => (
           <li key={`${entry.winnerTitle}-${index}`}>
-            {entry.winnerTitle}
-            <span className="mx-1 text-slate-400">beat</span>
-            {entry.loserTitle}
+            {entry.skipped ? (
+              <span className="text-slate-400">Skipped {entry.loserTitle}</span>
+            ) : (
+              <>
+                {entry.winnerTitle}
+                <span className="mx-1 text-slate-400">beat</span>
+                {entry.loserTitle}
+              </>
+            )}
           </li>
         ))}
       </ul>
@@ -438,24 +432,17 @@ function DecisionStage({ movie, onLock, onKeepExploring, rounds, log }: Decision
     <div className="flex flex-col gap-6 rounded-3xl border border-emerald-200 bg-emerald-50/70 p-6 shadow-xl dark:border-emerald-500/20 dark:bg-emerald-500/10">
       <p className="text-xs font-semibold uppercase tracking-[0.4em] text-emerald-500">We have a frontrunner</p>
       <div className="grid gap-4 md:grid-cols-[240px,1fr]">
-        {posterUrl && (
-          <Image src={posterUrl} alt={movie.title} width={420} height={630} className="h-72 w-full rounded-2xl object-cover" />
-        )}
+        {posterUrl && <Image src={posterUrl} alt={movie.title} width={420} height={630} className="h-72 w-full rounded-2xl object-cover" />}
         <div className="space-y-3">
           <h2 className="text-3xl font-semibold text-emerald-900 dark:text-emerald-100">{movie.title}</h2>
-          <p className="text-sm text-emerald-800/90 dark:text-emerald-100/80">
-            {movie.tagline || movie.overview}
-          </p>
+          <p className="text-sm text-emerald-800/90 dark:text-emerald-100/80">{movie.tagline || movie.overview}</p>
           <div className="flex flex-wrap gap-2 text-xs text-emerald-900/80">
             <span>{movie.releaseYear}</span>
             {movie.runtime && <span>{movie.runtime} min</span>}
             <span>{movie.voteAverage}★</span>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button
-              className="rounded-full bg-emerald-600 px-4 py-2 text-white shadow-md shadow-emerald-600/40"
-              onClick={onLock}
-            >
+            <button className="rounded-full bg-emerald-600 px-4 py-2 text-white shadow-md shadow-emerald-600/40" onClick={onLock}>
               Lock it in
             </button>
             <button className="text-sm font-semibold text-emerald-800 underline" onClick={onKeepExploring}>
@@ -503,10 +490,7 @@ function FinalStage({ movie, log, onRestart }: FinalStageProps) {
           >
             Copy title to share
           </button>
-          <button
-            className="text-sm font-semibold underline"
-            onClick={onRestart}
-          >
+          <button className="text-sm font-semibold underline" onClick={onRestart}>
             Start a new session
           </button>
         </div>
@@ -514,18 +498,6 @@ function FinalStage({ movie, log, onRestart }: FinalStageProps) {
       <SessionLog log={log} />
     </div>
   );
-}
-
-function pickPair(pool: Movie[], excludeIds: number[] = []): [Movie, Movie] | null {
-  if (pool.length < 2) return null;
-  const safePool = pool.filter((movie) => !excludeIds.includes(movie.id));
-  const source = safePool.length >= 2 ? safePool : pool;
-  const first = source[Math.floor(Math.random() * source.length)];
-  let second = first;
-  while (second.id === first.id) {
-    second = source[Math.floor(Math.random() * source.length)];
-  }
-  return [first, second];
 }
 
 function createScoreMap(movies: Movie[]) {
@@ -567,9 +539,17 @@ function rankLeaders(scores: Record<number, { wins: number; losses: number }>, m
       return b.score - a.score;
     })
     .slice(0, 2);
-  const leader = sorted[0]
-    ? movies.find((movie) => movie.id === sorted[0].id) ?? null
-    : null;
-  const margin = sorted.length === 2 ? sorted[0].score - sorted[1].score : sorted[0]?.score ?? 0;
+  const leader = sorted[0] ? movies.find((movie) => movie.id === sorted[0].id) ?? null : null;
+  const margin =
+    sorted.length === 2 ? sorted[0].score - sorted[1].score : sorted[0]?.score ?? 0;
   return { leader, margin };
+}
+
+function shuffleMovies(movies: Movie[]) {
+  const copy = [...movies];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
 }

@@ -14,4 +14,5 @@ export type Movie = {
 export type ComparisonLogEntry = {
   winnerTitle: string;
   loserTitle: string;
+  skipped?: boolean;
 };
