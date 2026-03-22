@@ -82,9 +82,14 @@ export async function POST(req: NextRequest) {
     const discoverResults = await fetchDiscover(filters, apiKey);
     const noteResults = note ? await fetchSearch(note, apiKey) : [];
 
-    const combined = dedupeById([...noteResults, ...discoverResults])
+    let combined = dedupeById([...noteResults, ...discoverResults])
       .filter((movie) => Boolean(movie.poster_path) && movie.vote_count >= MIN_VOTE_COUNT)
       .slice(0, MAX_RESULTS);
+
+    if (combined.length === 0) {
+      const fallback = await fetchPopular(apiKey);
+      combined = fallback.slice(0, MAX_RESULTS);
+    }
 
     if (combined.length === 0) {
       return NextResponse.json({ movies: [] });
@@ -204,6 +209,26 @@ async function fetchSearch(query: string, apiKey: string) {
 
   const res = await fetch(`${TMDB_API_BASE}/search/movie?${searchParams.toString()}`, {
     next: { revalidate: 60 },
+  });
+
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.results as TmdbMovie[];
+}
+
+async function fetchPopular(apiKey: string) {
+  const params = new URLSearchParams({
+    include_adult: 'false',
+    include_video: 'false',
+    language: 'en-US',
+    sort_by: 'popularity.desc',
+    'vote_count.gte': '300',
+    page: '1',
+    api_key: apiKey,
+  });
+
+  const res = await fetch(`${TMDB_API_BASE}/discover/movie?${params.toString()}`, {
+    next: { revalidate: 300 },
   });
 
   if (!res.ok) return [];
