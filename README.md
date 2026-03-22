@@ -1,36 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Movie Claw
 
-## Getting Started
+A cozy “Tinder for movie night” web app: describe the vibe (attention level, tone, energy) and Movie Claw fetches contenders from TMDb, pits them head‑to‑head, learns what you like, and surfaces a final pick you can lock in.
 
-First, run the development server:
+https://github.com/hassanalawie/movie-claw
+
+## Features
+
+- Multi-select vibe chips plus optional freeform note to capture intent without heavy typing
+- Server-side TMDb integration (API key stays on the server)
+- Pairwise comparison loop with progress meter, session log, and adaptive scoring
+- Decision-ready state that highlights the current frontrunner and lets you keep exploring or lock it in
+- Finale card for sharing / restarting sessions
+- Cozy, couch-friendly UI (large tap targets, warm palette, single-page flow)
+
+## Getting started
 
 ```bash
+npm install
+cp .env.local.example .env.local   # drop in your TMDb API key
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open <http://localhost:3000>.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `TMDB_API_KEY` – required. Get one at <https://www.themoviedb.org/settings/api>. Keep it in `.env.local` (already gitignored).
 
-## Learn More
+## Development scripts
 
-To learn more about Next.js, take a look at the following resources:
+- `npm run dev` – start Next.js dev server
+- `npm run lint` – run ESLint
+- `npm run build` – production build
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deployment
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Deploy straight to Vercel:
 
-## Deploy on Vercel
+```bash
+vercel --prod
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Make sure the `TMDB_API_KEY` is configured as an encrypted environment variable in your hosting provider before promoting to production.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Credits & notes
+
+This product uses the TMDb API but is not endorsed or certified by TMDb.
